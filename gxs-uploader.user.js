@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Image Mapping + Batch Upload & Row Opener (Premium UX Fixed)
+// @name         Image Mapping + Batch Upload & Row Opener (UX Optimized)
 // @namespace    http://tampermonkey.net/
-// @version      10
-// @description  Fully English translated, fixed bottom UI, Auto Sort, Custom Queue Matching, Smooth Drag Animation
+// @version      8.4
+// @description  Fully English translated, fixed bottom UI, Auto Sort, Instant Stop, Strict Dropdown Selection, Instant Image Upload Verification & Safe Saving
 // @author       UJay (Premium Batch Edition)
 // @match        *://demo.pdb.graphxserver.io/*
 // @match        *://*.pdb.graphxserver.io/*
@@ -14,11 +14,47 @@
     'use strict';
 
     const LOG = (msg) => console.log('%c[AutoMate] ' + msg, 'color:#D4AF37;font-weight:bold;');
-    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    // Custom Error for Instant Stopping
+    class BatchStopError extends Error { constructor() { super('Stopped'); this.name = 'BatchStopError'; } }
+    let batchStopRequested = false;
+
+    // Advanced wait function that checks for instant stop every 50ms
+    function wait(ms) {
+        return new Promise((resolve, reject) => {
+            if (batchStopRequested) return reject(new BatchStopError());
+            let waited = 0;
+            const step = 50;
+            const interval = setInterval(() => {
+                if (batchStopRequested) {
+                    clearInterval(interval);
+                    return reject(new BatchStopError());
+                }
+                waited += step;
+                if (waited >= ms) {
+                    clearInterval(interval);
+                    resolve();
+                }
+            }, step);
+        });
+    }
 
     let fileQueue = [];
     let sortStagingQueue = [];
-    let batchStopRequested = false;
+
+    // Invisible Click Blocker to prevent focus loss during batch
+    function toggleClickBlocker(enable) {
+        let blocker = document.getElementById('gxs-click-blocker');
+        if (!blocker) {
+            blocker = document.createElement('div');
+            blocker.id = 'gxs-click-blocker';
+            blocker.style.cssText = 'position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:99999997; display:none;';
+            document.body.appendChild(blocker);
+            blocker.addEventListener('click', e => { e.stopPropagation(); e.preventDefault(); }, true);
+            blocker.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); }, true);
+        }
+        blocker.style.display = enable ? 'block' : 'none';
+    }
 
     function getActiveQueueArray() {
         const activeTab = document.querySelector('.gxs-tab.active');
@@ -100,6 +136,7 @@
     }
 
     async function openRowAndAwaitModal(rowIndex, setStatus) {
+        await ensureNoModalOpen(setStatus);
         setStatus(`⏳ Looking for Row ${rowIndex}...`);
         let enlargeBtn = null; const maxRowSearchAttempts = 20;
         for (let attempt = 0; attempt < maxRowSearchAttempts; attempt++) {
@@ -118,6 +155,7 @@
     }
 
     async function openAddViewAndAwaitModal(setStatus) {
+        await ensureNoModalOpen(setStatus);
         if (isAddViewModalOpen()) return true;
         const addBtn = findAddNewViewButton();
         if(addBtn) {
@@ -127,9 +165,52 @@
         return false;
     }
 
+    // SAFETY LOCK
+    async function ensureNoModalOpen(setStatus) {
+        const isOpen = () => {
+            const nameInput = findViewNameInput();
+            return (nameInput && nameInput.offsetParent !== null) || isAddViewModalOpen();
+        };
+        if (!isOpen()) return true;
+
+        setStatus('🔒 Previous modal still open - closing it first...');
+        for (let attempt = 0; attempt < 5 && isOpen(); attempt++) {
+            const cancelBtn = findCancelButton();
+            if (cancelBtn) {
+                cancelBtn.scrollIntoView({ block: 'center', behavior: 'instant' });
+                await wait(100);
+                cancelBtn.click();
+                cancelBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            } else {
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+            }
+            await wait(500);
+        }
+
+        for (let i = 0; i < 20; i++) {
+            if (!isOpen()) { await wait(500); return true; }
+            await wait(150);
+        }
+
+        setStatus('⚠️ Could not confirm previous modal closed - proceeding cautiously...');
+        await wait(500);
+        return false;
+    }
+
     async function awaitModalClose(setStatus) {
         setStatus('⏳ Waiting for the window to close...');
-        for(let i=0; i<60; i++){ const nameInput = findViewNameInput(); if(!nameInput || nameInput.offsetParent === null) { await wait(400); return true; } await wait(100); }
+        for(let i=0; i<60; i++){
+            const nameInput = findViewNameInput();
+            if(!nameInput || nameInput.offsetParent === null) {
+                await wait(500);
+                const recheck = findViewNameInput();
+                if (!recheck || recheck.offsetParent === null) {
+                    await wait(300);
+                    return true;
+                }
+            }
+            await wait(100);
+        }
         return false;
     }
 
@@ -139,20 +220,30 @@
         return null;
     }
 
-    async function selectAutocompleteOption(input, value){
+    // STRICT DROPDOWN SELECTION
+    async function selectAutocompleteOption(input, value, setStatus){
         input.focus(); input.click(); setNativeValue(input, ""); await wait(50);
         let typed = "";
         for(const ch of value){
-            typed += ch; input.dispatchEvent(new KeyboardEvent("keydown",{key:ch,bubbles:true})); setNativeValue(input, typed); input.dispatchEvent(new KeyboardEvent("keyup",{key:ch,bubbles:true})); await wait(40);
+            typed += ch; input.dispatchEvent(new KeyboardEvent("keydown",{key:ch,bubbles:true})); setNativeValue(input, typed); input.dispatchEvent(new KeyboardEvent("keyup",{key:ch,bubbles:true})); await wait(50);
         }
-        await wait(800); let option=null;
-        for(let i=0;i<30;i++){
-            const options=[...document.querySelectorAll('li[role="option"]'),...document.querySelectorAll('.MuiAutocomplete-option')];
-            option=options.find(o=>{ return o.textContent.trim().toLowerCase()===value.toLowerCase(); }); if(option) break; await wait(50);
+        await wait(800);
+        let option = null;
+        for(let i=0; i<40; i++){
+            const options = [...document.querySelectorAll('li[role="option"]'),...document.querySelectorAll('.MuiAutocomplete-option')];
+            option = options.find(o=>{ return (o.textContent||'').trim().toLowerCase()===value.toLowerCase(); });
+            if(option) break;
+            await wait(100);
         }
         if(option){
-            option.scrollIntoView({block:"nearest"}); option.dispatchEvent(new MouseEvent("mousemove",{bubbles:true})); option.dispatchEvent(new MouseEvent("mouseover",{bubbles:true}));
-            option.dispatchEvent(new MouseEvent("mousedown",{bubbles:true})); option.dispatchEvent(new MouseEvent("mouseup",{bubbles:true})); option.click(); await wait(150); return true;
+            option.scrollIntoView({block:"nearest"}); await wait(100);
+            option.dispatchEvent(new MouseEvent("mousemove",{bubbles:true}));
+            option.dispatchEvent(new MouseEvent("mouseover",{bubbles:true}));
+            option.dispatchEvent(new MouseEvent("mousedown",{bubbles:true}));
+            option.dispatchEvent(new MouseEvent("mouseup",{bubbles:true}));
+            option.click();
+            await wait(400);
+            return true;
         }
         return false;
     }
@@ -255,13 +346,38 @@
         if (isEmptyMode) { setStatus('5. Clear default...'); } else { setStatus('5. Upper Color: ' + color + '...'); }
         let colorInput = null; for (let i = 0; i < 15; i++) { colorInput = findUpperSupplierColorInput(); if (colorInput) break; await wait(50); }
         if (!colorInput) { setStatus('❌ Upper Color missing'); return false; }
-        colorInput.scrollIntoView({ block: 'center', behavior: 'instant' }); await wait(30); colorInput.focus(); colorInput.click(); await wait(30);
+
+        colorInput.scrollIntoView({ block: 'center', behavior: 'instant' }); await wait(100); colorInput.focus(); colorInput.click(); await wait(100);
 
         const popupBtn = colorInput.closest(".MuiAutocomplete-root")?.querySelector(".MuiAutocomplete-popupIndicator"); if (popupBtn) { popupBtn.click(); await wait(200); }
         try { const root = colorInput.closest('.MuiAutocomplete-root,.MuiFormControl-root'); if (root) { const clearBtn = root.querySelector('.MuiAutocomplete-clearIndicator, button[aria-label="Clear"], button.MuiAutocomplete-clearIndicator'); if (clearBtn) { clearBtn.click(); await wait(100); } } } catch(e) {}
-        setNativeValue(colorInput, ''); colorInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true })); colorInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Backspace', bubbles: true })); await wait(50);
+
+        setNativeValue(colorInput, ''); colorInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true })); colorInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Backspace', bubbles: true })); await wait(100);
         if (isEmptyMode) { colorInput.blur(); return true; }
-        const ok = await selectAutocompleteOption(colorInput, color); await wait(50); const final = findUpperSupplierColorInput(); if (final) { if (final.value.toLowerCase() !== color) { setNativeValue(final, color); } } return ok;
+
+        let success = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (attempt > 0) setStatus(`⚠️ Retrying dropdown (${attempt+1})...`);
+            success = await selectAutocompleteOption(colorInput, color, setStatus);
+            if (success) {
+                await wait(300);
+                const final = findUpperSupplierColorInput();
+                if (final && final.value.toLowerCase() === color) {
+                     break;
+                } else {
+                     success = false;
+                }
+            }
+        }
+
+        if (!success) {
+            setStatus('❌ Dropdown selection failed.');
+        } else {
+            setStatus('✅ Upper Color Selected via Dropdown');
+        }
+
+        await wait(300);
+        return success;
     }
 
     async function doFilterSteps(color, setStatus) {
@@ -296,7 +412,7 @@
             }
             if (matched) { matched.scrollIntoView({ block: 'nearest' }); matched.click(); matched.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); matched.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); matched.dispatchEvent(new MouseEvent('click', { bubbles: true })); await wait(50);
             } else { valueInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, code: 'Enter' })); await wait(100); }
-            valueInput.blur(); document.body.click(); await wait(50);
+            valueInput.blur(); await wait(50);
         } await wait(100);
     }
 
@@ -336,6 +452,50 @@
         if(rows.length > 0) await tickOneRow(rows[0], setStatus);
     }
 
+    function isImageActuallyLoaded(expectedFileName) {
+        const previewImg = document.querySelector(
+            '.ImagePreview img, .sc-cTTzzJ img, div[class*="ImagePreview"] img, div[class*="dragZone"] img, .dragZone img'
+        );
+        if (previewImg && previewImg.src && previewImg.src !== '' && previewImg.complete && previewImg.naturalWidth > 0) {
+            return true;
+        }
+
+        const imagePreviewBox = document.querySelector('.ImagePreview [style*="background-image: url"], .sc-cTTzzJ[style*="background-image: url"]');
+        const fileNameSpans = Array.from(document.querySelectorAll('span.typography--variant-buttonCondensed, span.sc-cHNdQp, span'));
+        const isFileNameVisible = fileNameSpans.some(span => {
+            const text = (span.textContent || '').trim();
+            return text.includes(expectedFileName) || /\.(webp|png|jpe?g)$|base64,/i.test(text);
+        });
+        return !!(imagePreviewBox && isFileNameVisible);
+    }
+
+    // Direct Image Verification without the 15-second loop
+    async function verifyImageUploaded(expectedFileName, setStatus) {
+        setStatus('⏳ 7.5 Verifying image upload...');
+        LOG('Checking if image is uploaded in Custom Image tab...');
+
+        let tab = null;
+        for (let i = 0; i < 15; i++) { tab = findCustomImageTab(); if (tab) break; await wait(50); }
+        if (tab) {
+            tab.scrollIntoView({ block: 'center', behavior: 'instant' }); await wait(50);
+            tab.click(); tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            await wait(200);
+        } else {
+            setStatus('⚠️ Custom Image tab not found for verification');
+            return false;
+        }
+
+        if (isImageActuallyLoaded(expectedFileName)) {
+            setStatus('✅ Image upload verified!');
+            LOG('✅ Image verified!');
+            await wait(200);
+            return true;
+        }
+
+        setStatus('⚠️ Image not verified - proceeding...');
+        return false;
+    }
+
     function findCancelButton() { let btn = document.querySelector('button.sc-fPksnM.sc-hGfXqB.kJrWBy.gnNdgg'); if (btn && (btn.textContent || '').trim().toLowerCase() === 'cancel') return btn; return Array.from(document.querySelectorAll('button')).find(b => (b.textContent || '').trim().toLowerCase() === 'cancel' && b.offsetParent !== null); }
     async function clickCancelButton(setStatus) { setStatus('10. Cancel...'); let btn = null; for (let i = 0; i < 15; i++) { btn = findCancelButton(); if (btn) break; await wait(50); } if (!btn) return false; btn.scrollIntoView({ block: 'center', behavior: 'instant' }); await wait(50); btn.click(); btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return true; }
 
@@ -369,7 +529,17 @@
         }
 
         await doFilterSteps(color,setStatus); await waitForDynamicLoad(setStatus); await wait(10); await tickFirstRowOnly(setStatus); await wait(200);
-        if (color) { await fillUpperSupplierColor(color, setStatus); await wait(200); }
+
+        await verifyImageUploaded(file.name, setStatus);
+        await clickProductPartsTab(setStatus);
+        await wait(400);
+
+        if (color) {
+            await fillUpperSupplierColor(color, setStatus);
+        }
+
+        setStatus('⏳ Finalizing processing (Waiting for UI)...');
+        await wait(1200);
     }
 
     let gxsStatusLog = []; const GXS_MAX_LOG = 4;
@@ -509,6 +679,7 @@
         if (activeQueue.length === 0 && !isProcessing) {
             batchUi.classList.remove('visible');
             if (startBtn) startBtn.style.display = 'none';
+            if (stopBtn) stopBtn.style.display = 'none';
             setTimeout(() => { if (activeQueue.length === 0 && zone.dataset.state !== 'processing') { batchUi.style.display = 'none'; list.innerHTML = ''; } }, 300);
             return;
         }
@@ -595,52 +766,38 @@
     function createDropZone(){
         if(document.getElementById('gxs-dropzone')) return;
         const zone=document.createElement('div'); zone.id='gxs-dropzone';
-        zone.dataset.state = 'idle'; // Initial State
+        zone.dataset.state = 'idle';
         zone.innerHTML = `
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 #gxs-dropzone{
-    --gxs-accent: #D4AF37; /* Classic Gold */
-    --gxs-accent-2: #F1E5AC; /* Champagne Gold */
+    --gxs-accent: #D4AF37;
+    --gxs-accent-2: #F1E5AC;
     --gxs-accent-soft: rgba(212, 175, 55, 0.18);
-    --gxs-success: #4ADE80; /* Emerald Green */
+    --gxs-success: #4ADE80;
     --gxs-error: #FF6B6B;
     --gxs-warn: #FACC15;
-
-    --gxs-bg: rgba(10, 10, 12, 0.90); /* Obsidian Black */
+    --gxs-bg: rgba(10, 10, 12, 0.90);
     --gxs-bg-elevated: rgba(18, 18, 22, 0.95);
-    --gxs-border: rgba(212, 175, 55, 0.15); /* Soft Gold Border */
+    --gxs-border: rgba(212, 175, 55, 0.15);
     --gxs-text: #F8F8F8;
     --gxs-text-dim: #A0A0A5;
 
     position:fixed; top:0; right:0; height:100vh; z-index:99999999; width:320px;
     min-width:260px; max-width:520px;
     display:flex; flex-direction:column;
-    border-radius:0;
-    border-left:1px solid var(--gxs-border);
+    border-radius:0; border-left:1px solid var(--gxs-border);
     background:linear-gradient(160deg, var(--gxs-bg-elevated) 0%, var(--gxs-bg) 100%);
     backdrop-filter:blur(30px) saturate(200%);
     -webkit-backdrop-filter:blur(30px) saturate(200%);
-    color:var(--gxs-text);
-    font-family:'Inter',sans-serif;
+    color:var(--gxs-text); font-family:'Inter',sans-serif;
     box-shadow: -15px 0 40px -10px rgba(0,0,0,0.8);
     transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s ease, border-color 0.4s ease;
 }
 
-#gxs-batch-ui {
-    display: none;
-    flex-direction: column !important;
-    opacity: 0;
-    transform: translateY(-10px);
-    transition: opacity 0.4s ease, transform 0.4s ease;
-}
-#gxs-batch-ui.visible {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-/* --- STATE MANAGEMENT STYLES --- */
+#gxs-batch-ui { display: none; flex-direction: column !important; opacity: 0; transform: translateY(-10px); transition: opacity 0.4s ease, transform 0.4s ease; }
+#gxs-batch-ui.visible { opacity: 1; transform: translateY(0); }
 #gxs-dropzone[data-state="idle"] { border-left-color: var(--gxs-border); }
 #gxs-dropzone[data-state="processing"] { border-left-color: var(--gxs-accent); box-shadow: inset 2px 0 15px var(--gxs-accent-soft), -20px 0 50px -10px rgba(0,0,0,0.9); }
 #gxs-dropzone[data-state="done"] { border-left-color: var(--gxs-success); box-shadow: inset 2px 0 15px rgba(74, 222, 128, 0.15), -20px 0 50px -10px rgba(0,0,0,0.9); }
@@ -651,8 +808,7 @@
     background: linear-gradient(160deg, var(--gxs-bg-elevated) 0%, var(--gxs-bg) 100%);
     border: 1px solid var(--gxs-border); border-right: none; border-radius: 8px 0 0 8px;
     display: flex; align-items: center; justify-content: center;
-    cursor: pointer; color: var(--gxs-text-dim);
-    box-shadow: -4px 0 12px rgba(0,0,0,0.5);
+    cursor: pointer; color: var(--gxs-text-dim); box-shadow: -4px 0 12px rgba(0,0,0,0.5);
     transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease;
     backdrop-filter: blur(30px) saturate(200%);
 }
@@ -688,23 +844,34 @@
 @keyframes gxsPulseIdle{ 0%,100%{ opacity:0.6; transform:scale(1); } 50%{ opacity:1; transform:scale(1.1); box-shadow:0 0 8px rgba(255,255,255,0.3); } }
 @keyframes gxsPulseProcess{ 0%,100%{ transform:scale(1); box-shadow:0 0 10px var(--gxs-accent-soft); } 50%{ transform:scale(1.3); box-shadow:0 0 20px var(--gxs-accent); } }
 
+@keyframes gxsGoldShineText { to { background-position: 200% center; } }
+@keyframes gxsSilverShineText { to { background-position: 200% center; } }
+
 #gxs-title{ font-size:14px; font-weight:600; color:var(--gxs-text); letter-spacing:0.5px; display:flex; align-items:center; text-transform: uppercase; }
 
-@keyframes gxsShineText { to { background-position: 200% center; } }
-#gxs-version {
-    font-size: 10.5px; margin-top: 2px; font-weight: 800; letter-spacing: 1.5px;
+#gxs-title-text {
     background: linear-gradient(90deg, #c5a059 0%, #ffdf8d 40%, #ffffff 50%, #ffdf8d 60%, #c5a059 100%);
     background-size: 200% auto;
     color: transparent;
     -webkit-background-clip: text;
     background-clip: text;
-    animation: gxsShineText 2.5s linear infinite;
+    animation: gxsGoldShineText 2.5s linear infinite;
+    font-weight: 800;
+}
+
+#gxs-version {
+    font-size: 10.5px; margin-top: 2px; font-weight: 800; letter-spacing: 1.5px;
+    background: linear-gradient(90deg, #999999 0%, #e0e0e0 40%, #ffffff 50%, #e0e0e0 60%, #999999 100%);
+    background-size: 200% auto;
+    color: transparent;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: gxsSilverShineText 2.5s linear infinite;
     text-transform: uppercase;
 }
 
 .gxs-count-badge{ display:none; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 5px; margin-left:7px; font-size:10.5px; font-weight:700; border-radius:9px; background:linear-gradient(135deg, var(--gxs-accent), var(--gxs-accent-2)); color:#000; box-shadow:0 2px 8px var(--gxs-accent-soft); }
 
-/* --- NEW FIXED LAYOUT STRUCTURE CSS --- */
 #gxs-body{ padding:0; flex:1; overflow:hidden; display:flex; flex-direction:column; }
 #gxs-scroll-section{ flex:1; overflow-y:auto; padding:14px 16px; display:flex; flex-direction:column; }
 #gxs-fixed-footer{ flex-shrink:0; padding:14px 16px; background: rgba(14, 14, 16, 0.95); border-top: 1px solid var(--gxs-border); box-shadow: 0 -5px 15px rgba(0,0,0,0.3); margin-top:auto;}
@@ -775,7 +942,7 @@
 
 <div id="gxs-toggle-panel" title="Toggle Sidebar"><svg viewBox="0 0 24 24"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg></div>
 <div id="gxs-header">
-  <div id="gxs-header-left"><span id="gxs-icon-dot"></span><div><div id="gxs-title">Product Uploader<span id="gxs-count-badge" class="gxs-count-badge">0</span></div><div id="gxs-version">PREMIUM V7.5</div></div></div>
+  <div id="gxs-header-left"><span id="gxs-icon-dot"></span><div><div id="gxs-title"><span id="gxs-title-text">Product Uploader</span><span id="gxs-count-badge" class="gxs-count-badge">0</span></div><div id="gxs-version">PREMIUM V8.4</div></div></div>
 </div>
 
 <div id="gxs-tabs">
@@ -849,7 +1016,7 @@
             const incCheckbox = zone.querySelector('#gxs-increment-order'); if (incCheckbox) incCheckbox.checked = false;
             const orderEl = zone.querySelector('#gxs-vieworder-input'); if (orderEl) orderEl.value = '';
 
-            zone.dataset.state = 'idle'; // Reset State to Idle
+            zone.dataset.state = 'idle';
             renderQueue(); setStatus('↺ UI Reset — Ready.');
         }
 
@@ -899,57 +1066,78 @@
 
             batchStopRequested = false;
             zone.dataset.state = 'processing';
-            renderQueue(); // Re-render to hide queue and show Stop button
+            renderQueue();
+            toggleClickBlocker(true);
 
             historyEl.style.display = 'block'; historyEl.innerHTML = '';
-            const batchStartTime = Date.now(); let stoppedAt = -1;
+            const batchStartTime = Date.now();
+            let stoppedAt = -1;
+            let wasUserStop = false;
 
-            for (let i = 0; i < fileQueue.length; i++) {
-                if (batchStopRequested) { stoppedAt = i; break; }
-                const item = fileQueue[i]; const itemStartTime = Date.now();
-                setStatus(`⏳ [${i+1}/${fileQueue.length}] Uploading: ${item.file.name}...`);
+            try {
+                for (let i = 0; i < fileQueue.length; i++) {
+                    stoppedAt = i;
+                    const item = fileQueue[i]; const itemStartTime = Date.now();
+                    setStatus(`⏳ [${i+1}/${fileQueue.length}] Uploading: ${item.file.name}...`);
 
-                if (isUpdate) {
-                    setStatus(`Opening Row ${item.row}...`); const opened = await openRowAndAwaitModal(item.row, setStatus);
-                    if (!opened) { setStatus(`❌ Could not open Row ${item.row}. Batch stopped.`); stoppedAt = i; break; }
-                } else {
-                    setStatus(`Opening Add New View...`); const opened = await openAddViewAndAwaitModal(setStatus);
-                    if (!opened) { setStatus(`❌ Could not open Add View. Batch stopped.`); stoppedAt = i; break; }
+                    if (isUpdate) {
+                        setStatus(`Opening Row ${item.row}...`); const opened = await openRowAndAwaitModal(item.row, setStatus);
+                        if (!opened) { setStatus(`❌ Could not open Row ${item.row}. Batch stopped.`); break; }
+                    } else {
+                        setStatus(`Opening Add New View...`); const opened = await openAddViewAndAwaitModal(setStatus);
+                        if (!opened) { setStatus(`❌ Could not open Add View. Batch stopped.`); break; }
+                    }
+
+                    await processSingleFile(item.file, isUpdate, setStatus);
+
+                    if (shouldSave) { await clickSaveButton(setStatus); } else { await clickCancelButton(setStatus); }
+                    await awaitModalClose(setStatus);
+                    if (isUpdate) { await awaitRowEnlargeReady(item.row, setStatus); }
+
+                    const itemElapsed = ((Date.now() - itemStartTime) / 1000).toFixed(1);
+                    historyEl.innerHTML += `<div class="history-row"><span class="history-name">${i+1}. ${item.file.name}</span> <span class="history-status">DONE - ${itemElapsed}s</span></div>`;
+                    historyEl.scrollTop = historyEl.scrollHeight; await wait(800);
                 }
-
-                await processSingleFile(item.file, isUpdate, setStatus);
-                if (shouldSave) { await clickSaveButton(setStatus); } else { await clickCancelButton(setStatus); }
-                await awaitModalClose(setStatus);
-                if (isUpdate) { await awaitRowEnlargeReady(item.row, setStatus); }
-
-                const itemElapsed = ((Date.now() - itemStartTime) / 1000).toFixed(1);
-                historyEl.innerHTML += `<div class="history-row"><span class="history-name">${i+1}. ${item.file.name}</span> <span class="history-status">DONE - ${itemElapsed}s</span></div>`;
-                historyEl.scrollTop = historyEl.scrollHeight; await wait(800);
+                stoppedAt = -1;
+            } catch (err) {
+                if (err.name === 'BatchStopError') {
+                    wasUserStop = true;
+                } else {
+                    console.error(err);
+                }
             }
 
+            toggleClickBlocker(false);
+
             const totalElapsed = ((Date.now() - batchStartTime) / 1000).toFixed(1);
-            historyEl.innerHTML += `<div style="margin-top:10px; color:var(--gxs-accent); font-weight:bold; text-align:center; border-top:1px dashed var(--gxs-border); padding-top:8px;">Batch Complete in ${totalElapsed}s</div>`;
+            if(stoppedAt === -1 && !wasUserStop) {
+                historyEl.innerHTML += `<div style="margin-top:10px; color:var(--gxs-accent); font-weight:bold; text-align:center; border-top:1px dashed var(--gxs-border); padding-top:8px;">Batch Complete in ${totalElapsed}s</div>`;
+            }
             historyEl.scrollTop = historyEl.scrollHeight;
 
-            if (stoppedAt >= 0) {
-                const wasUserStop = batchStopRequested; const processed = fileQueue.splice(0, stoppedAt);
+            if (wasUserStop || stoppedAt >= 0) {
+                const processedIndex = wasUserStop ? stoppedAt : stoppedAt + 1;
+                const processed = fileQueue.splice(0, processedIndex);
                 processed.forEach(item => { if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl); });
                 batchStopRequested = false;
                 zone.dataset.state = 'idle';
                 renderQueue();
-                if (wasUserStop) { setStatus(`⏹ Batch stopped. (${stoppedAt} done)`); }
+                if (wasUserStop) { setStatus(`⏹ Batch instantly stopped! (${processedIndex} done)`); }
             } else {
                 fileQueue.forEach(item => { if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl); });
                 fileQueue = [];
                 zone.dataset.state = 'done';
                 renderQueue();
                 setStatus('✅ Entire batch uploaded successfully!');
-
                 setTimeout(() => { if(!batchStopRequested) zone.dataset.state = 'idle'; }, 4000);
             }
         };
 
-        zone.querySelector('#gxs-stop-batch-btn').onclick = (e) => { e.stopPropagation(); batchStopRequested = true; setStatus('⏹ Stopping... finishing current file.'); };
+        zone.querySelector('#gxs-stop-batch-btn').onclick = (e) => {
+            e.stopPropagation();
+            batchStopRequested = true;
+            setStatus('⏹ Stopping instantly...');
+        };
 
         (function setupResize(){
             const leftHandle = zone.querySelector('.gxs-resize-left'); const MIN_WIDTH = 260, MAX_WIDTH = 520;
@@ -985,5 +1173,5 @@
         zone.ondrop=e=>{ e.preventDefault(); zone.classList.remove('dragover'); runWithAccent(e.dataTransfer.files); };
     }
 
-    setTimeout(()=>{ createDropZone(); LOG('Premium Batch Auto V7.5 Ready'); },500);
+    setTimeout(()=>{ createDropZone(); LOG('UX Optimized Batch Auto V8.4 Ready'); },500);
 })();
