@@ -1,11 +1,18 @@
 // ==UserScript==
 // @name         Image Mapping + Batch Upload & Row Opener (UX Optimized)
 // @namespace    http://tampermonkey.net/
-// @version      8.5
+// @version      8.5.0
 // @description  Fully English translated, fixed bottom UI, Auto Sort, Instant Stop, Strict Dropdown Selection, Instant Image Upload Verification & Safe Saving
-// @author       UJay (Premium Batch Edition)
+// @author       UJay
+
 // @match        *://demo.pdb.graphxserver.io/*
 // @match        *://*.pdb.graphxserver.io/*
+
+// @downloadURL  https://github.com/UJayathilaka/gxs-uploader-script/raw/refs/heads/main/gxs-uploader.user.js
+// @updateURL    https://github.com/UJayathilaka/gxs-uploader-script/raw/refs/heads/main/gxs-uploader.user.js
+// @homepageURL  https://github.com/UJayathilaka/gxs-uploader-script
+// @supportURL   https://github.com/UJayathilaka/gxs-uploader-script/issues
+
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
