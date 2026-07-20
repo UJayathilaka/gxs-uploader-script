@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Mapping + Batch Upload & Row Opener (UX Optimized)
 // @namespace    http://tampermonkey.net/
-// @version      8.5.0
+// @version      8.5.1
 // @description  Fully English translated, fixed bottom UI, Auto Sort, Instant Stop, Strict Dropdown Selection, Instant Image Upload Verification & Safe Saving
 // @author       UJay
 
