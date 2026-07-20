@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Mapping + Batch Upload & Row Opener (UX Optimized)
 // @namespace    http://tampermonkey.net/
-// @version      8.5.2
+// @version      8.5.3
 // @description  Fully English translated, fixed bottom UI, Auto Sort, Instant Stop, Strict Dropdown Selection, Instant Image Upload Verification & Safe Saving
 // @author       UJay
 
@@ -459,24 +459,20 @@
         if(rows.length > 0) await tickOneRow(rows[0], setStatus);
     }
 
+    // Dynamic Image Load Check with exact File Name match
     function isImageActuallyLoaded(expectedFileName) {
-        const previewImg = document.querySelector(
-            '.ImagePreview img, .sc-cTTzzJ img, div[class*="ImagePreview"] img, div[class*="dragZone"] img, .dragZone img'
-        );
-        if (previewImg && previewImg.src && previewImg.src !== '' && previewImg.complete && previewImg.naturalWidth > 0) {
-            return true;
-        }
-
         const imagePreviewBox = document.querySelector('.ImagePreview [style*="background-image: url"], .sc-cTTzzJ[style*="background-image: url"]');
-        const fileNameSpans = Array.from(document.querySelectorAll('span.typography--variant-buttonCondensed, span.sc-cHNdQp, span'));
-        const isFileNameVisible = fileNameSpans.some(span => {
-            const text = (span.textContent || '').trim();
-            return text.includes(expectedFileName) || /\.(webp|png|jpe?g)$|base64,/i.test(text);
+        const fileNameSpans = Array.from(document.querySelectorAll('span.typography--variant-buttonCondensed, span.sc-cHNdQp, .ImagePreview span'));
+        
+        const isFileNameMatch = fileNameSpans.some(span => {
+            const uploadedName = (span.textContent || '').trim();
+            return uploadedName === expectedFileName || uploadedName.includes(expectedFileName);
         });
-        return !!(imagePreviewBox && isFileNameVisible);
+
+        return !!(imagePreviewBox && isFileNameMatch);
     }
 
-    // Direct Image Verification without the 15-second loop
+    // Image Verification with retry loop (max 3 seconds)
     async function verifyImageUploaded(expectedFileName, setStatus) {
         setStatus('⏳ 7.5 Verifying image upload...');
         LOG('Checking if image is uploaded in Custom Image tab...');
@@ -492,11 +488,14 @@
             return false;
         }
 
-        if (isImageActuallyLoaded(expectedFileName)) {
-            setStatus('✅ Image upload verified!');
-            LOG('✅ Image verified!');
-            await wait(200);
-            return true;
+        for (let check = 0; check < 20; check++) {
+            if (isImageActuallyLoaded(expectedFileName)) {
+                setStatus('✅ Image upload verified!');
+                LOG('✅ Image verified!');
+                await wait(200);
+                return true;
+            }
+            await wait(150);
         }
 
         setStatus('⚠️ Image not verified - proceeding...');
@@ -949,7 +948,7 @@
 
 <div id="gxs-toggle-panel" title="Toggle Sidebar"><svg viewBox="0 0 24 24"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg></div>
 <div id="gxs-header">
-  <div id="gxs-header-left"><span id="gxs-icon-dot"></span><div><div id="gxs-title"><span id="gxs-title-text">Product Uploader</span><span id="gxs-count-badge" class="gxs-count-badge">0</span></div><div id="gxs-version">PREMIUM V8.4</div></div></div>
+  <div id="gxs-header-left"><span id="gxs-icon-dot"></span><div><div id="gxs-title"><span id="gxs-title-text">Product Uploader</span><span id="gxs-count-badge" class="gxs-count-badge">0</span></div><div id="gxs-version">PREMIUM V8.5.3</div></div></div>
 </div>
 
 <div id="gxs-tabs">
@@ -1180,5 +1179,5 @@
         zone.ondrop=e=>{ e.preventDefault(); zone.classList.remove('dragover'); runWithAccent(e.dataTransfer.files); };
     }
 
-    setTimeout(()=>{ createDropZone(); LOG('UX Optimized Batch Auto V8.4 Ready'); },500);
+    setTimeout(()=>{ createDropZone(); LOG('UX Optimized Batch Auto V8.5.3 Ready'); },500);
 })();
