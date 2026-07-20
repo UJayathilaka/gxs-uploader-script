@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Mapping + Batch Upload & Row Opener (Premium UX Fixed)
 // @namespace    http://tampermonkey.net/
-// @version      7.7
+// @version      10
 // @description  Fully English translated, fixed bottom UI, Auto Sort, Custom Queue Matching, Smooth Drag Animation
 // @author       UJay (Premium Batch Edition)
 // @match        *://demo.pdb.graphxserver.io/*
