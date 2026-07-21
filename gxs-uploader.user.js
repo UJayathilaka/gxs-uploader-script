@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Mapping + Batch Upload & Row Opener (UX Optimized)
 // @namespace    http://tampermonkey.net/
-// @version      8.5.3
+// @version      8.5.4
 // @description  Fully English translated, fixed bottom UI, Auto Sort, Instant Stop, Strict Dropdown Selection, Instant Image Upload Verification & Safe Saving
 // @author       UJay
 
@@ -44,6 +44,33 @@
                 }
             }, step);
         });
+    }
+
+    // Detects the page's loading spinner. Covers both common library spinners (Mui/skeleton/etc,
+    // matched by class name) AND this app's custom "rotating bars" SVG spinner, which has NO class
+    // name on the <svg> or <rect> tags (styled-components hash classes only on wrapper divs, and
+    // those hashes can change between deployments) - so it's matched structurally instead: any
+    // <svg> containing 6+ <rect> children that each have a rotate() transform.
+    function isLoaderVisible() {
+        const generic = document.querySelector('.MuiCircularProgress-root, [role="progressbar"], [data-testid="progressbar"], svg.fa-spin, svg[class*="spin"], .MuiSkeleton-root, [class*="skeleton" i]');
+        if (generic) return true;
+
+        const svgs = document.querySelectorAll('svg');
+        for (const svg of svgs) {
+            const rotatingRects = svg.querySelectorAll('rect[transform*="rotate"]');
+            if (rotatingRects.length >= 6 && svg.offsetParent !== null) return true;
+        }
+        return false;
+    }
+
+    // NO TIMEOUT here on purpose - keeps polling forever until the spinner is 100% gone.
+    // Still respects the Stop button: wait() throws BatchStopError when batchStopRequested
+    // is true, which unwinds this loop the same way it unwinds everything else.
+    async function waitForSpinnerToVanish(setStatus) {
+        while (isLoaderVisible()) {
+            if (setStatus) setStatus('⏳ Waiting for loading spinner to fully disappear...');
+            await wait(200);
+        }
     }
 
     let fileQueue = [];
@@ -105,7 +132,7 @@
     function findDragZone() { return document.querySelector('.dragZone') || document.querySelector('[class*="dragZone"]'); }
 
     async function dropFileIntoZone(file, setStatus) {
-        setStatus('1. Dragging & dropping image...');
+        setStatus('2. Dragging & dropping image...');
         let zone = null;
         for (let i = 0; i < 20; i++) { zone = findDragZone(); if (zone) break; await wait(100); }
         if (!zone) { setStatus('❌ Drop Zone not found!'); return false; }
@@ -212,6 +239,7 @@
                 await wait(500);
                 const recheck = findViewNameInput();
                 if (!recheck || recheck.offsetParent === null) {
+                    await waitForSpinnerToVanish(setStatus);
                     await wait(300);
                     return true;
                 }
@@ -326,7 +354,7 @@
     }
 
     async function selectViewCategory(category, setStatus) {
-        if (!category) return; setStatus('4. ' + category.text + '...');
+        if (!category) return; setStatus('5. ' + category.text + '...');
         for (let retry = 0; retry < 3; retry++) {
             let trigger = null; for (let i = 0; i < 20; i++) { trigger = findCategoryTrigger(); if (trigger) break; await wait(50); }
             if (!trigger) { await wait(150); continue; }
@@ -350,7 +378,7 @@
 
     async function fillUpperSupplierColor(color, setStatus) {
         let isEmptyMode = false; if (!color) { isEmptyMode = true; color = ""; } else { color = color.toLowerCase().trim(); }
-        if (isEmptyMode) { setStatus('5. Clear default...'); } else { setStatus('5. Upper Color: ' + color + '...'); }
+        if (isEmptyMode) { setStatus('8. Clear default...'); } else { setStatus('8. Upper Color: ' + color + '...'); }
         let colorInput = null; for (let i = 0; i < 15; i++) { colorInput = findUpperSupplierColorInput(); if (colorInput) break; await wait(50); }
         if (!colorInput) { setStatus('❌ Upper Color missing'); return false; }
 
@@ -425,9 +453,9 @@
 
     async function waitForDynamicLoad(setStatus) {
         setStatus('8. Waiting for rows...'); await wait(800);
+        await waitForSpinnerToVanish(setStatus);
         for(let i = 0; i < 40; i++) {
-            let loader = document.querySelector('.MuiCircularProgress-root, [role="progressbar"], [data-testid="progressbar"], svg.fa-spin, svg[class*="spin"], .MuiSkeleton-root, [class*="skeleton" i]');
-            let hasRealRows = getAllRows().length > 0; if (!loader && hasRealRows) { await wait(250); return true; } await wait(250);
+            let hasRealRows = getAllRows().length > 0; if (hasRealRows) { await wait(250); return true; } await wait(250);
         } return false;
     }
 
@@ -459,22 +487,30 @@
         if(rows.length > 0) await tickOneRow(rows[0], setStatus);
     }
 
-    // Dynamic Image Load Check with exact File Name match
     function isImageActuallyLoaded(expectedFileName) {
-        const imagePreviewBox = document.querySelector('.ImagePreview [style*="background-image: url"], .sc-cTTzzJ[style*="background-image: url"]');
-        const fileNameSpans = Array.from(document.querySelectorAll('span.typography--variant-buttonCondensed, span.sc-cHNdQp, .ImagePreview span'));
-        
-        const isFileNameMatch = fileNameSpans.some(span => {
-            const uploadedName = (span.textContent || '').trim();
-            return uploadedName === expectedFileName || uploadedName.includes(expectedFileName);
-        });
+        // 1) <img> tag version (backup, UI වෙනස් වුනොත් වැඩ කරන්න)
+        const previewImg = document.querySelector(
+            '.ImagePreview img, .sc-cTTzzJ img, div[class*="ImagePreview"] img, div[class*="dragZone"] img, .dragZone img'
+        );
+        if (previewImg && previewImg.src && previewImg.src !== '' && previewImg.complete && previewImg.naturalWidth > 0) {
+            return true;
+        }
 
-        return !!(imagePreviewBox && isFileNameMatch);
+        // 2) ඇත්තටම මේ site එකේ ඇත්තේ මේකයි - background-image style එකක් ඇති div එකක් (.sc-cTTzzJ / .ImagePreview)
+        const previewBox = document.querySelector('.ImagePreview .sc-cTTzzJ, .sc-cTTzzJ, div[class*="ImagePreview"] div[style*="background-image"]');
+        if (previewBox) {
+            const bg = previewBox.style.backgroundImage || window.getComputedStyle(previewBox).backgroundImage;
+            if (bg && bg !== 'none' && bg.trim() !== 'url("")' && bg.includes('url(')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
-    // Image Verification with retry loop (max 3 seconds)
+    // Direct Image Verification at Step 3
     async function verifyImageUploaded(expectedFileName, setStatus) {
-        setStatus('⏳ 7.5 Verifying image upload...');
+        setStatus('⏳ 3. Verifying image upload...');
         LOG('Checking if image is uploaded in Custom Image tab...');
 
         let tab = null;
@@ -488,7 +524,7 @@
             return false;
         }
 
-        for (let check = 0; check < 20; check++) {
+        for (let i = 0; i < 20; i++) {
             if (isImageActuallyLoaded(expectedFileName)) {
                 setStatus('✅ Image upload verified!');
                 LOG('✅ Image verified!');
@@ -510,14 +546,22 @@
 
     async function clickProductPartsTab(setStatus){ setStatus('6. Product Parts...'); let tab=null; for(let i=0;i<15;i++){ tab=findProductPartsTab(); if(tab) break; await wait(50); } if(!tab) return false; tab.scrollIntoView({block:'center',behavior:'instant'}); await wait(50); tab.click(); tab.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true})); await wait(150); return true; }
 
+    // --- යාවත්කාලීන කරන ලද ප්‍රධාන ක්‍රියාවලිය (UPDATED MAIN PROCESS) ---
     async function processSingleFile(file, isUpdateMode, setStatus) {
         const name = file.name.replace(/\.[^/.]+$/, "").trim(); const category = detectCategory(name); const color = extractColor(name);
 
-        await clickCustomImageTab(setStatus); await dropFileIntoZone(file, setStatus);
-        setStatus('2. Name...'); let nameInput=null; for(let i=0;i<8;i++){ nameInput=findViewNameInput(); if(nameInput) break; await wait(50); }
+        // පියවර 1 සහ 2: Custom Image Tab එකට ගොස් පින්තූරය Drop කිරීම
+        await clickCustomImageTab(setStatus);
+        await dropFileIntoZone(file, setStatus);
+
+        // --- පියවර 3: පින්තූරය නිවැරදිව අප්ලෝඩ් වී ඇත්දැයි තහවුරු කරගැනීම (Verification Step 3) ---
+        await verifyImageUploaded(file.name, setStatus);
+
+        // පියවර 4 සහ ඉදිරියට: නම, AutoCode සහ Category තේරීම
+        setStatus('3. Name...'); let nameInput=null; for(let i=0;i<8;i++){ nameInput=findViewNameInput(); if(nameInput) break; await wait(50); }
         if(nameInput){ nameInput.focus(); setNativeValue(nameInput,''); await wait(20); setNativeValue(nameInput,name); } await wait(100);
 
-        setStatus('3. AutoCode...'); let checkbox=findAutoCodeCheckbox(); if(checkbox){ const label=document.querySelector('label[for="autoCode"]')||checkbox.closest('label'); if(!checkbox.checked){ if(label) label.click(); else checkbox.click(); } } await wait(100);
+        setStatus('4. AutoCode...'); let checkbox=findAutoCodeCheckbox(); if(checkbox){ const label=document.querySelector('label[for="autoCode"]')||checkbox.closest('label'); if(!checkbox.checked){ if(label) label.click(); else checkbox.click(); } } await wait(100);
         await selectViewCategory(category,setStatus); await wait(100);
 
         let oldColor = null;
@@ -535,10 +579,6 @@
         }
 
         await doFilterSteps(color,setStatus); await waitForDynamicLoad(setStatus); await wait(10); await tickFirstRowOnly(setStatus); await wait(200);
-
-        await verifyImageUploaded(file.name, setStatus);
-        await clickProductPartsTab(setStatus);
-        await wait(400);
 
         if (color) {
             await fillUpperSupplierColor(color, setStatus);
@@ -948,7 +988,7 @@
 
 <div id="gxs-toggle-panel" title="Toggle Sidebar"><svg viewBox="0 0 24 24"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg></div>
 <div id="gxs-header">
-  <div id="gxs-header-left"><span id="gxs-icon-dot"></span><div><div id="gxs-title"><span id="gxs-title-text">Product Uploader</span><span id="gxs-count-badge" class="gxs-count-badge">0</span></div><div id="gxs-version">PREMIUM V8.5.3</div></div></div>
+  <div id="gxs-header-left"><span id="gxs-icon-dot"></span><div><div id="gxs-title"><span id="gxs-title-text">Product Uploader</span><span id="gxs-count-badge" class="gxs-count-badge">0</span></div><div id="gxs-version">PREMIUM V8.4</div></div></div>
 </div>
 
 <div id="gxs-tabs">
@@ -1086,6 +1126,7 @@
                     const item = fileQueue[i]; const itemStartTime = Date.now();
                     setStatus(`⏳ [${i+1}/${fileQueue.length}] Uploading: ${item.file.name}...`);
 
+                    await waitForSpinnerToVanish(setStatus);
                     if (isUpdate) {
                         setStatus(`Opening Row ${item.row}...`); const opened = await openRowAndAwaitModal(item.row, setStatus);
                         if (!opened) { setStatus(`❌ Could not open Row ${item.row}. Batch stopped.`); break; }
@@ -1094,11 +1135,19 @@
                         if (!opened) { setStatus(`❌ Could not open Add View. Batch stopped.`); break; }
                     }
 
+                    await waitForSpinnerToVanish(setStatus);
                     await processSingleFile(item.file, isUpdate, setStatus);
 
+                    await waitForSpinnerToVanish(setStatus);
                     if (shouldSave) { await clickSaveButton(setStatus); } else { await clickCancelButton(setStatus); }
+
+                    await waitForSpinnerToVanish(setStatus);
                     await awaitModalClose(setStatus);
-                    if (isUpdate) { await awaitRowEnlargeReady(item.row, setStatus); }
+
+                    if (isUpdate) {
+                        await waitForSpinnerToVanish(setStatus);
+                        await awaitRowEnlargeReady(item.row, setStatus);
+                    }
 
                     const itemElapsed = ((Date.now() - itemStartTime) / 1000).toFixed(1);
                     historyEl.innerHTML += `<div class="history-row"><span class="history-name">${i+1}. ${item.file.name}</span> <span class="history-status">DONE - ${itemElapsed}s</span></div>`;
@@ -1179,5 +1228,5 @@
         zone.ondrop=e=>{ e.preventDefault(); zone.classList.remove('dragover'); runWithAccent(e.dataTransfer.files); };
     }
 
-    setTimeout(()=>{ createDropZone(); LOG('UX Optimized Batch Auto V8.5.3 Ready'); },500);
+    setTimeout(()=>{ createDropZone(); LOG('UX Optimized Batch Auto V8.4 Ready'); },500);
 })();
